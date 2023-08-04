@@ -25,7 +25,7 @@ import (
 	"github.com/GoogleCloudPlatform/terraformer/terraformutils"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/hashicorp/terraform/flatmap"
+	"github.com/hashicorp/terraform/configs/hcl2shim/flatmap"
 	"gonum.org/v1/gonum/graph"
 	simplegraph "gonum.org/v1/gonum/graph/simple"
 	"gonum.org/v1/gonum/graph/topo"

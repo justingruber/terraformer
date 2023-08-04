@@ -25,17 +25,19 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/exp/maps"
+
 	"github.com/GoogleCloudPlatform/terraformer/terraformutils/terraformerstring"
 
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/hashicorp/terraform/configs/configschema"
-	tfplugin "github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
-	"github.com/hashicorp/terraform/terraform"
-	"github.com/hashicorp/terraform/version"
 )
 
 // DefaultDataDir is the default directory for storing local data.
@@ -50,12 +52,12 @@ const DefaultPluginVendorDirV12 = "terraform.d/plugins/" + pluginMachineName
 const pluginMachineName = runtime.GOOS + "_" + runtime.GOARCH
 
 type ProviderWrapper struct {
-	Provider     *tfplugin.GRPCProvider
+	Provider     *schema.Provider
 	client       *plugin.Client
 	rpcClient    plugin.ClientProtocol
 	providerName string
 	config       cty.Value
-	schema       *providers.GetSchemaResponse
+	schema       *terraform.ProviderSchema
 	retryCount   int
 	retrySleepMs int
 }
@@ -85,10 +87,13 @@ func (p *ProviderWrapper) Kill() {
 	p.client.Kill()
 }
 
-func (p *ProviderWrapper) GetSchema() *providers.GetSchemaResponse {
+func (p *ProviderWrapper) GetSchema() *terraform.ProviderSchema {
 	if p.schema == nil {
-		r := p.Provider.GetSchema()
-		p.schema = &r
+		req, _ := p.Provider.GetSchema(&terraform.ProviderSchemaRequest{
+			ResourceTypes: maps.Values(p.Provider.ResourcesMap),
+			DataSources:   maps.Values(p.Provider.DataSourcesMap),
+		})
+		p.schema = req
 	}
 	return p.schema
 }
@@ -96,14 +101,14 @@ func (p *ProviderWrapper) GetSchema() *providers.GetSchemaResponse {
 func (p *ProviderWrapper) GetReadOnlyAttributes(resourceTypes []string) (map[string][]string, error) {
 	r := p.GetSchema()
 
-	if r.Diagnostics.HasErrors() {
-		return nil, r.Diagnostics.Err()
+	if err := p.Provider.InternalValidate(); err != nil {
+		return nil, err
 	}
 	readOnlyAttributes := map[string][]string{}
 	for resourceName, obj := range r.ResourceTypes {
 		if terraformerstring.ContainsString(resourceTypes, resourceName) {
 			readOnlyAttributes[resourceName] = append(readOnlyAttributes[resourceName], "^id$")
-			for k, v := range obj.Block.Attributes {
+			for k, v := range obj.Attributes {
 				if !v.Optional && !v.Required {
 					if v.Type.IsListType() || v.Type.IsSetType() {
 						readOnlyAttributes[resourceName] = append(readOnlyAttributes[resourceName], "^"+k+"\\.(.*)")
@@ -112,7 +117,7 @@ func (p *ProviderWrapper) GetReadOnlyAttributes(resourceTypes []string) (map[str
 					}
 				}
 			}
-			readOnlyAttributes[resourceName] = p.readObjBlocks(obj.Block.BlockTypes, readOnlyAttributes[resourceName], "-1")
+			readOnlyAttributes[resourceName] = p.readObjBlocks(obj.BlockTypes, readOnlyAttributes[resourceName], "-1")
 		}
 	}
 	return readOnlyAttributes, nil
@@ -160,7 +165,7 @@ func (p *ProviderWrapper) readObjBlocks(block map[string]*configschema.NestedBlo
 
 func (p *ProviderWrapper) Refresh(info *terraform.InstanceInfo, state *terraform.InstanceState) (*terraform.InstanceState, error) {
 	schema := p.GetSchema()
-	impliedType := schema.ResourceTypes[info.Type].Block.ImpliedType()
+	impliedType := schema.ResourceTypes[info.Type].ImpliedType()
 	priorState, err := state.AttrsAsObjectValue(impliedType)
 	if err != nil {
 		return nil, err
